@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RFID Attendance Dashboard</title>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.3/build/global/luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .card { @apply bg-white shadow-xl rounded-2xl p-6 mb-6; }
+    .login-background { background: linear-gradient(to right, #6EE7B7, #3B82F6); }
+    .login-container {
+      @apply max-w-md mx-auto bg-white p-6 rounded-xl shadow-md mt-10;
+      border: 2px solid #3B82F6;
+    }
+    .login-btn {
+      background: linear-gradient(to right, #FF7E5F, #feb47b);
+      color: white; font-weight: bold;
+    }
+    .login-btn:hover {
+      background: linear-gradient(to right, #feb47b, #FF7E5F);
+    }
+    .error-message {
+      color: #F87171; font-size: 0.875rem; margin-top: 0.5rem;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+<!-- Login Section -->
+<div id="loginSection" class="login-background min-h-screen flex items-center justify-center">
+  <div class="login-container">
+    <h2 class="text-2xl font-semibold mb-4 text-center text-blue-600">🔐 Admin Login</h2>
+    <input id="email" type="email" placeholder="Email" class="w-full p-2 mb-3 border rounded-xl">
+    <input id="password" type="password" placeholder="Password" class="w-full p-2 mb-3 border rounded-xl">
+    <button onclick="adminLogin()" class="w-full p-2 rounded-xl login-btn">Login</button>
+    <p id="loginError" class="error-message hidden">Invalid login credentials.</p>
+  </div>
+</div>
+
+<!-- Dashboard Section -->
+<div id="dashboardSection" style="display: none;" class="max-w-7xl mx-auto p-6 relative">
+  <h1 class="text-4xl font-bold mb-6 text-center">📋 RFID Attendance Dashboard</h1>
+
+  <div class="flex flex-col md:flex-row items-start md:items-center justify-between mb-6 gap-4">
+    <input type="text" id="searchInput" placeholder="Search by name or RFID..." class="w-full md:w-1/3 p-3 border border-gray-300 rounded-xl shadow-sm">
+    <div class="space-x-3">
+      <button onclick="filterToday()" class="bg-blue-600 text-white px-4 py-2 rounded-xl">Today</button>
+      <button onclick="filterThisWeek()" class="bg-green-600 text-white px-4 py-2 rounded-xl">This Week</button>
+      <button onclick="loadAttendance()" class="bg-gray-600 text-white px-4 py-2 rounded-xl">Reset</button>
+    </div>
+  </div>
+
+  <div class="flex flex-col sm:flex-row items-center gap-3 mb-6">
+    <select id="csvFilter" class="p-2 border border-gray-300 rounded-xl shadow-sm">
+      <option value="all">All Records</option>
+      <option value="today">Today</option>
+      <option value="week">This Week</option>
+    </select>
+    <button onclick="downloadCSV()" class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded-xl">Download CSV</button>
+  </div>
+
+  <div class="card overflow-x-auto">
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Name</th>
+          <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">RFID</th>
+          <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Time</th>
+          <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Days Present</th>
+        </tr>
+      </thead>
+      <tbody id="attendanceTable" class="bg-white divide-y divide-gray-200"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2 class="text-xl font-semibold mb-4">📊 Weekly Attendance Chart</h2>
+    <canvas id="weeklyChart" height="150"></canvas>
+  </div>
+
+  <div class="card">
+    <h2 class="text-xl font-semibold mb-4">📈 Monthly Attendance Trend</h2>
+    <canvas id="monthlyChart" height="150"></canvas>
+  </div>
+
+  <button onclick="logout()" class="absolute top-6 right-6 bg-red-500 text-white px-4 py-2 rounded-xl">Logout</button>
+</div>
+
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyBxqLhUkdUKhjz55PJDMWbGrPyyEuOcNQA",
+    authDomain: "smartattendancesystem-edcfe.firebaseapp.com",
+    databaseURL: "https://smartattendancesystem-edcfe-default-rtdb.firebaseio.com",
+    projectId: "smartattendancesystem-edcfe",
+    storageBucket: "smartattendancesystem-edcfe.appspot.com",
+    messagingSenderId: "553665013265",
+    appId: "1:553665013265:web:d30f40e920faf41640f3b0"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+  let allRecords = [];
+  let weeklyChartInstance, monthlyChartInstance;
+
+  function getRandomColor() {
+    const r = Math.floor(Math.random() * 256);
+    const g = Math.floor(Math.random() * 256);
+    const b = Math.floor(Math.random() * 256);
+    return `rgba(${r}, ${g}, ${b}, 0.7)`;
+  }
+
+  function adminLogin() {
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
+    if (email === "shamsinsham@gmail.com" && password === "sss@3" || email==="hod101@gmail.com" && password==="hod101") {
+      document.getElementById("loginSection").style.display = "none";
+      document.getElementById("dashboardSection").style.display = "block";
+      loadAttendance();
+    } else {
+      document.getElementById("loginError").classList.remove("hidden");
+    }
+  }
+
+  function logout() {
+    location.reload();
+  }
+
+  function loadAttendance() {
+    const table = document.getElementById("attendanceTable");
+    table.innerHTML = "<tr><td colspan='4' class='text-center p-4'>Loading...</td></tr>";
+    db.ref("attendance").once("value").then(snapshot => {
+      allRecords = [];
+      const studentDays = {};
+      snapshot.forEach(studentSnap => {
+        const rfid = studentSnap.key;
+        const dateSet = new Set();
+        studentSnap.forEach(entry => {
+          const data = entry.val();
+          const dateOnly = data.timestamp.split(" ")[0];
+          dateSet.add(dateOnly);
+          allRecords.push({ name: data.name || "Unknown", rfid, timestamp: data.timestamp, date: dateOnly });
+        });
+        studentDays[rfid] = dateSet.size;
+      });
+      allRecords.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      displayTable(allRecords, studentDays);
+      renderCharts(allRecords);
+    });
+  }
+
+  function displayTable(records, studentDays = {}) {
+    const table = document.getElementById("attendanceTable");
+    table.innerHTML = "";
+    const displayed = new Set();
+    const dayMap = {};
+
+    records.forEach(r => {
+      if (!dayMap[r.rfid]) dayMap[r.rfid] = new Set();
+      dayMap[r.rfid].add(r.date);
+    });
+
+    if (records.length === 0) {
+      table.innerHTML = "<tr><td colspan='4' class='text-center p-4'>No records found</td></tr>";
+      return;
+    }
+
+    records.forEach(record => {
+      if (displayed.has(record.rfid)) return;
+      displayed.add(record.rfid);
+      const presentDays = dayMap[record.rfid]?.size || studentDays[record.rfid] || "-";
+      table.innerHTML += `<tr>
+        <td class="px-6 py-4">${record.name}</td>
+        <td class="px-6 py-4">${record.rfid}</td>
+        <td class="px-6 py-4">${record.timestamp}</td>
+        <td class="px-6 py-4 text-center">${presentDays}</td>
+      </tr>`;
+    });
+  }
+
+  function filterToday() {
+    const today = luxon.DateTime.now().toFormat("yyyy-MM-dd");
+    const filtered = allRecords.filter(r => r.timestamp.startsWith(today));
+    displayTable(filtered);
+  }
+
+  function filterThisWeek() {
+    const now = luxon.DateTime.now();
+    const weekStart = now.startOf("week");
+    const filtered = allRecords.filter(r => {
+      const dt = luxon.DateTime.fromFormat(r.timestamp, "yyyy-MM-dd HH:mm:ss");
+      return dt >= weekStart && dt <= now;
+    });
+    displayTable(filtered);
+  }
+
+  function renderCharts(records) {
+    if (weeklyChartInstance) weeklyChartInstance.destroy();
+    if (monthlyChartInstance) monthlyChartInstance.destroy();
+
+    const weekly = {}, monthly = {};
+    records.forEach(r => {
+      const week = luxon.DateTime.fromFormat(r.timestamp, "yyyy-MM-dd HH:mm:ss").startOf("week").toFormat("yyyy-LL-dd");
+      const month = r.date.slice(0, 7);
+      if (!weekly[r.name]) weekly[r.name] = {};
+      if (!weekly[r.name][week]) weekly[r.name][week] = 0;
+      weekly[r.name][week]++;
+      if (!monthly[r.name]) monthly[r.name] = {};
+      if (!monthly[r.name][month]) monthly[r.name][month] = 0;
+      monthly[r.name][month]++;
+    });
+
+    const names = Object.keys(weekly);
+    const weeks = [...new Set(records.map(r => luxon.DateTime.fromFormat(r.timestamp, "yyyy-MM-dd HH:mm:ss").startOf("week").toFormat("yyyy-LL-dd")))];
+    const months = [...new Set(records.map(r => r.date.slice(0, 7)))];
+
+    weeklyChartInstance = new Chart(document.getElementById("weeklyChart"), {
+      type: "bar",
+      data: {
+        labels: weeks,
+        datasets: names.map(name => ({
+          label: name,
+          data: weeks.map(w => weekly[name][w] || 0),
+          backgroundColor: getRandomColor()
+        }))
+      },
+      options: {
+        responsive: true,
+        animation: {
+          duration: 1500,
+          easing: "easeOutBounce"
+        }
+      }
+    });
+
+    monthlyChartInstance = new Chart(document.getElementById("monthlyChart"), {
+      type: "bar",
+      data: {
+        labels: months,
+        datasets: names.map(name => ({
+          label: name,
+          data: months.map(m => monthly[name][m] || 0),
+          backgroundColor: getRandomColor()
+        }))
+      },
+      options: {
+        responsive: true,
+        animation: {
+          duration: 1500,
+          easing: "easeOutQuart"
+        }
+      }
+    });
+  }
+
+  function downloadCSV() {
+    const filterValue = document.getElementById("csvFilter").value;
+    let filtered = [...allRecords];
+    const now = luxon.DateTime.now();
+
+    if (filterValue === "today") {
+      const today = now.toFormat("yyyy-MM-dd");
+      filtered = filtered.filter(r => r.timestamp.startsWith(today));
+    } else if (filterValue === "week") {
+      const weekStart = now.startOf("week");
+      filtered = filtered.filter(r => {
+        const dt = luxon.DateTime.fromFormat(r.timestamp, "yyyy-MM-dd HH:mm:ss");
+        return dt >= weekStart && dt <= now;
+      });
+    }
+
+    let csv = "Name,RFID,Timestamp\n";
+    filtered.forEach(r => {
+      csv += `${r.name.trim()},${r.rfid},${r.timestamp}\n`;
+    });
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "attendance_data.csv";
+    link.click();
+  }
+
+  document.getElementById("searchInput").addEventListener("input", function () {
+    const term = this.value.toLowerCase();
+    const filtered = allRecords.filter(r =>
+      r.name.toLowerCase().includes(term) || r.rfid.includes(term)
+    );
+    displayTable(filtered);
+  });
+</script>
+</body>
+</html>
